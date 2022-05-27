@@ -25,13 +25,13 @@ namespace JasonChen {
         // threadpool status
         int core_thread_num;
         int max_thread_num;
-        std::atomic<bool> stop_now{false};
+        std::atomic<bool> stop_now{false}; // shutdown
 
         std::mutex tasks_queue_mutex;
         std::condition_variable thread_cv;
 
         using ThreadPtr = std::shared_ptr<std::thread>;
-        using TasksQueueLock = std::unique_lock<std::mutex>;
+        using ThreadLock = std::unique_lock<std::mutex>;
 
         // thread status
         enum class ThreadType { INIT, CORE, CACHE };
@@ -52,7 +52,7 @@ namespace JasonChen {
         using Task = std::function<void()>;
         TasksQueue tasks_queue;
         
-
+        
         void init() {
             while (--core_thread_num >= 0)
             {
@@ -75,11 +75,11 @@ namespace JasonChen {
 
                         // tasks queue lock
                         {
-                            TasksQueueLock u_lock(tasks_queue_mutex);
+                            ThreadLock u_lock(tasks_queue_mutex);
 
                             // waiting for task
                             thread_cv.wait(u_lock, [this] () {
-                                return stop_now || !taskIsEmpty(); 
+                                return stop_now || !taskIsEmpty();
                             });
 
                             if(stop_now && taskIsEmpty()) {
@@ -109,7 +109,7 @@ namespace JasonChen {
                 Task task;
                 // tasks queue lock
                 {
-                    TasksQueueLock u_lock(tasks_queue_mutex);
+                    ThreadLock u_lock(tasks_queue_mutex);
                     if (!taskIsEmpty())
                     {
                         // get task from tasks_queue
@@ -139,7 +139,7 @@ namespace JasonChen {
         // cache thread number : max thread number - core thread number
         explicit ThreadPool(int always_thread_num)
             : core_thread_num(always_thread_num > std::thread::hardware_concurrency() ? std::thread::hardware_concurrency() : always_thread_num),
-            max_thread_num(2*std::thread::hardware_concurrency()) {
+            max_thread_num(2 * std::thread::hardware_concurrency()) {
             std::cout << core_thread_num << std::endl;
             std::cout << max_thread_num << std::endl;
             init();
@@ -178,7 +178,7 @@ namespace JasonChen {
 
             // tasks queue lock
             {
-                TasksQueueLock u_lock(tasks_queue_mutex);
+                ThreadLock u_lock(tasks_queue_mutex);
                 tasks_queue.emplace([task_ptr]() { (*task_ptr)(); });
             }
 //--------------------------push a new task to tasks_queue----------------------------
@@ -189,8 +189,11 @@ namespace JasonChen {
         }
 
         void shutDown() {
+            // start shutdown all child threads
             stop_now = true;
             thread_cv.notify_all();
+
+            // merge child threads to main thread when thread has been shutdown
             for (auto it = threads_list.begin(); it != threads_list.end(); ++it) {
                 if ((*it)->ptr->joinable()) (*it)->ptr->join();
             }
