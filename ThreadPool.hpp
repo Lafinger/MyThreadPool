@@ -15,27 +15,31 @@
 namespace JasonChen {
 
     // to do list
-    //  1.if task execute overtime
-    //  2.atomic count instead of tasks queue is empty 
-    //  3.add cache thread to handle the situation where the threadpool is too busy
-    //  4. 
+    // 1.if task execute overtime
+    // 2.atomic count instead of tasks queue is empty 
+    // 3.add cache thread to handle the situation where the threadpool is too busy
+    // 4. 
     class ThreadPool {
 
     private:
         // threadpool status
         int core_thread_num;
         int max_thread_num;
-        std::atomic<bool> stop_now{false}; // shutdown
+        std::atomic<int> current_threads_num {0};
+        std::atomic<int> accessible_core_num {0};
+        std::atomic<bool> shut_down {false};
+        std::atomic<int> tasks_num {0};
+
 
         std::mutex tasks_queue_mutex;
         std::condition_variable thread_cv;
 
         using ThreadPtr = std::shared_ptr<std::thread>;
-        using ThreadLock = std::unique_lock<std::mutex>;
+        using TasksQueueLock = std::unique_lock<std::mutex>;
 
         // thread status
         enum class ThreadType { INIT, CORE, CACHE };
-        enum class ThreadState { FREE, BUSY, SHUTDOWN };
+        enum class ThreadState { FREE, BUSY};
         struct ThreadWrapper {
             ThreadPtr ptr = nullptr;
             ThreadType type = ThreadType::INIT;
@@ -51,12 +55,15 @@ namespace JasonChen {
         using TasksQueue = std::queue<std::function<void()>>;
         using Task = std::function<void()>;
         TasksQueue tasks_queue;
-        
-        
+
+        // future vector
+        // using ResultVector = std::vector<std::future<>>
+
         void init() {
             while (--core_thread_num >= 0)
             {
                 addThread(ThreadType::CORE);
+                ++accessible_core_num;
             }
         }
 
@@ -66,34 +73,36 @@ namespace JasonChen {
 
             // add core thread
             if (ThreadType::CORE == thread_type) {
-                
-                // task
-                Task task = [this, thread_wrapper_ptr] () {
+                // core task
+                Task task = [this, thread_wrapper_ptr]() {
                     while (true) {
+
                         Task task;
                         thread_wrapper_ptr->state = ThreadState::FREE;
 
                         // tasks queue lock
                         {
-                            ThreadLock u_lock(tasks_queue_mutex);
+                            TasksQueueLock u_lock(tasks_queue_mutex);
 
                             // waiting for task
-                            thread_cv.wait(u_lock, [this] () {
-                                return stop_now || !taskIsEmpty();
+                            thread_cv.wait(u_lock, [this, thread_wrapper_ptr]() {
+                                return shut_down || !taskIsEmpty(); 
                             });
 
-                            if(stop_now && taskIsEmpty()) {
+                            if(shut_down && (taskIsEmpty() || 0 == tasks_num)) {
                                 return;
                             }
 
                             // get task from tasks_queue
                             task = std::move(tasks_queue.front());
                             tasks_queue.pop();
+                            --tasks_num;
                         }
 
                         thread_wrapper_ptr->state = ThreadState::BUSY;
-                        // execute task
-                        task();
+                        --accessible_core_num;
+                        task(); // execute task
+                        ++accessible_core_num;
                     }
                 };
 
@@ -105,32 +114,52 @@ namespace JasonChen {
             // cache thread
             else if (ThreadType::CACHE == thread_type) {
 
-                // task
-                Task task;
-                // tasks queue lock
-                {
-                    ThreadLock u_lock(tasks_queue_mutex);
-                    if (!taskIsEmpty())
-                    {
-                        // get task from tasks_queue
-                        task = std::move(tasks_queue.front());
-                        tasks_queue.pop();
+                // cache task
+                Task task = [this, thread_wrapper_ptr]() {
+                    while (true) {
+
+                        Task task;
+                        thread_wrapper_ptr->state = ThreadState::FREE;
+
+                        // tasks queue lock
+                        {
+                            TasksQueueLock u_lock(tasks_queue_mutex);
+
+                            // waiting for task
+                            thread_cv.wait(u_lock, [this, thread_wrapper_ptr]() {
+                                return shut_down || !taskIsEmpty(); 
+                            });
+
+                            if(shut_down || taskIsEmpty() || (0 == tasks_num)) {
+                                return;
+                            }
+
+                            // get task from tasks_queue
+                            task = std::move(tasks_queue.front());
+                            tasks_queue.pop();
+                            --tasks_num;
+                        }
+
+                        thread_wrapper_ptr->state = ThreadState::BUSY;
+                        task(); // execute task
                     }
-                }
-                task();
+                };
 
                 ThreadPtr thread_ptr = std::make_shared<std::thread>(task);
                 thread_wrapper_ptr->ptr = thread_ptr;
                 thread_wrapper_ptr->type = thread_type;
+
             }
 
             // add thread wrapper to threads list
             threads_list.push_back(thread_wrapper_ptr);
+            // thread number + 1
+            ++current_threads_num;
         }
 
     public:
         ThreadPool() {
-            core_thread_num = 4;
+            core_thread_num = 5;
             max_thread_num = std::thread::hardware_concurrency();
             std::cout << max_thread_num << std::endl;
         }
@@ -164,7 +193,7 @@ namespace JasonChen {
         auto run(F&& f, Args&&... args) -> std::future<std::result_of_t<F(Args...)>> {
             using TaskResultType = std::result_of_t<F(Args...)>;
 
-//--------------------------push a new task to tasks_queue----------------------------
+            //--------------------------push a new task to tasks_queue----------------------------
             std::shared_ptr<std::packaged_task<TaskResultType()>> task_ptr =
                 std::make_shared<std::packaged_task<TaskResultType()>>(
                     std::bind(std::forward<F>(f), std::forward<Args>(args)...));
@@ -178,29 +207,36 @@ namespace JasonChen {
 
             // tasks queue lock
             {
-                ThreadLock u_lock(tasks_queue_mutex);
+                TasksQueueLock u_lock(tasks_queue_mutex);
                 tasks_queue.emplace([task_ptr]() { (*task_ptr)(); });
+                tasks_num++;
             }
-//--------------------------push a new task to tasks_queue----------------------------
+            //--------------------------push a new task to tasks_queue----------------------------
 
-            thread_cv.notify_one();
+
+            // add cache thread if tasks queue is not empty and core threads is busy
+            if(tasks_num && !accessible_core_num && (current_threads_num <= max_thread_num)) {
+                std::cout << "add cache thread" << std::endl;
+                addThread(ThreadType::CACHE);
+            }
+            else {
+                thread_cv.notify_one();
+            }
 
             return std::move(result_future);
         }
 
+        // shut down when tasks have been done
         void shutDown() {
-            // start shutdown all child threads
-            stop_now = true;
+            shut_down = true;
             thread_cv.notify_all();
-
-            // merge child threads to main thread when thread has been shutdown
             for (auto it = threads_list.begin(); it != threads_list.end(); ++it) {
                 if ((*it)->ptr->joinable()) (*it)->ptr->join();
             }
         }
 
         void shutDownNow() {
-            //TODO
+            // TODO
         }
     };
 

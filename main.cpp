@@ -11,16 +11,16 @@ int main()
         return a + b;
     };
 
-    std::future<int> tasks_result_vec[10];
+    std::vector<std::future<int>> tasks_result_vec;
 
-    for (int i = 0; i < 10; ++i) {
+    for (int i = 0; i < 100000; ++i) {
         // std::cout << "task finished : " << my_thread_pool.run(task, i, i + 1) << std::endl;
-        tasks_result_vec[i] = my_thread_pool.run(task, i, i + 1);
+        tasks_result_vec.emplace_back(my_thread_pool.run(task, i, i + 1));
     }
 
 
-     for (int i = 0; i < 10; ++i) {
-         std::cout << tasks_result_vec[i].get() << std::endl;
+     for (auto itor = tasks_result_vec.begin(); itor != tasks_result_vec.end(); ++itor) {
+        std::cout << (*itor).get() << std::endl;
      }
     
     my_thread_pool.shutDown();
