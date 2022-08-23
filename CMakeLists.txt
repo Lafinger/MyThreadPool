@@ -6,6 +6,6 @@ set(CMAKE_CXX_STANDARD 17)
 
 #add_library(ThreadPoolLib STATIC ThreadPool.hpp)
 
-add_executable(ThreadPool main.cpp ThreadPool.hpp)
+add_executable(ThreadPool main.cpp)
 target_link_libraries(ThreadPool -pthread)
 #target_link_libraries(ThreadPoolExe ThreadPoolLib)
