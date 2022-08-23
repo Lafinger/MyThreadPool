@@ -16,8 +16,8 @@ namespace Jason {
 
 // to do list
 // 1.if task execute overtime
-// 2.atomic count instead of tasks queue is empty 
-// 3.add cache thread to handle the situation which the threadpool is too busy
+// -2.atomic count instead of tasks queue is empty 
+// -3.add cache thread to handle the situation which the threadpool is too busy
 class ThreadPool {
 
 private:
@@ -181,7 +181,7 @@ void ThreadPool::AddThread(ThreadType thread_type)
     }
 
     // add thread wrapper to threads list
-    threads_list.push_back(thread_wrapper_ptr);
+    threads_list.emplace_back(thread_wrapper_ptr);
     // thread number + 1
     ++current_threads_num;
 }
@@ -212,7 +212,7 @@ auto ThreadPool::Run(F&& f, Args&&... args) -> std::future<std::invoke_result_t<
     {
         TasksQueueLock u_lock(tasks_queue_mutex);
         tasks_queue.emplace([task_ptr]() { (*task_ptr)(); });
-        tasks_num++;
+        ++tasks_num;
     }
     //--------------------------push a new task to tasks_queue----------------------------
 
@@ -248,7 +248,7 @@ void ThreadPool::ShutDownNow()
 ThreadPool::ThreadPool() 
 {
     core_threads_num = static_cast<int>(std::thread::hardware_concurrency() / 2);
-    threads_total = std::thread::hardware_concurrency();
+    threads_total = std::thread::hardware_concurrency();;
     std::cout << core_threads_num << std::endl;
     std::cout << threads_total << std::endl;
 }
